@@ -10,6 +10,7 @@ import requests
 import psutil
 from fastdtw import fastdtw
 from scipy.spatial.distance import cosine 
+import math # Добавил для формулы
 
 app = Flask(__name__)
 CORS(app) 
@@ -26,57 +27,48 @@ def compare_pronunciation(original_file_path, user_file_path):
     try:
         TARGET_SR = 16000 
         
-        # 1. Загрузка
         y_orig, _ = librosa.load(original_file_path, sr=TARGET_SR, mono=True)
         y_user, _ = librosa.load(user_file_path, sr=TARGET_SR, mono=True)
         
-        # 2. УМНАЯ ОБРЕЗКА (Stricter Trimming)
-        # top_db=30 означает, что всё, что тише основного голоса на 30дБ, считается тишиной.
-        # Это обрежет шум вентилятора или дыхание до/после слов.
+        # Обрезка тишины (оставляем top_db=30, это хорошо работает)
         y_orig, _ = librosa.effects.trim(y_orig, top_db=30)
         y_user, _ = librosa.effects.trim(y_user, top_db=30)
 
-        # Если после обрезки ничего не осталось
         if len(y_user) < 1000:
              return {"similarity": 0, "status": "success", "message": "Too silent"}
 
-        # 3. Извлечение MFCC
-        # Используем hop_length=512 для детальности
+        # MFCC
         mfcc_orig = librosa.feature.mfcc(y=y_orig, sr=TARGET_SR, n_mfcc=13, hop_length=512)
         mfcc_user = librosa.feature.mfcc(y=y_user, sr=TARGET_SR, n_mfcc=13, hop_length=512)
         
-        # 4. CMVN (Cepstral Mean and Variance Normalization)
-        # Приводим к стандарту (среднее 0, разброс 1). 
-        # Это делает сравнение независимым от громкости и микрофона.
+        # CMVN (Нормализация)
         mfcc_orig = (mfcc_orig - np.mean(mfcc_orig, axis=1, keepdims=True)) / (np.std(mfcc_orig, axis=1, keepdims=True) + 1e-8)
         mfcc_user = (mfcc_user - np.mean(mfcc_user, axis=1, keepdims=True)) / (np.std(mfcc_user, axis=1, keepdims=True) + 1e-8)
 
-        # 5. DTW с Косинусной метрикой
-        # radius=50 дает алгоритму свободу сопоставить медленную речь с быстрой
+        # DTW Cosine
         distance, path = fastdtw(mfcc_orig.T, mfcc_user.T, dist=cosine, radius=50)
         
-        # 6. Нормализация
         path_len = len(path) if len(path) > 0 else 1
         normalized_distance = distance / path_len
         
         print(f"=== COSINE DISTANCE: {normalized_distance:.4f} ===", flush=True)
         
-        # 7. Расчет оценки (Калибровка под Cosine + CMVN)
-        # 0.15 - 0.25 -> Отлично (90-100%)
-        # 0.25 - 0.40 -> Хорошо (70-90%)
-        # 0.40 - 0.60 -> Средне (40-70%)
-        # > 0.60 -> Плохо
+        # --- НОВАЯ "ДОБРАЯ" КАЛИБРОВКА (Sigmoid) ---
+        # Центр кривой смещен в 0.55. 
+        # Всё что до 0.45 - считается хорошим.
+        # Всё что после 0.65 - считается плохим.
         
-        # Формула Гаусса (колокол) с центром в 0
-        # Чем дальше дистанция от 0, тем быстрее падает оценка
-        similarity = 100 * np.exp(-(normalized_distance**2) / (2 * (0.35**2)))
+        # 0.20 -> 97%
+        # 0.42 -> 79% (Твой текущий результат)
+        # 0.55 -> 50%
+        # 0.80 -> 7%
         
-        # Немного подтянем оценки, если они слишком строгие
-        if normalized_distance < 0.4:
-            similarity += 10 # Бонус за старание
-            
-        if similarity > 100: similarity = 100
+        similarity = 100 / (1 + math.exp(10 * (normalized_distance - 0.55)))
         
+        # Небольшой бонус за попытку, если не совсем ужасно
+        if normalized_distance < 0.6 and similarity < 40:
+            similarity = 40
+
         return {
             "similarity": round(similarity),
             "status": "success"
@@ -92,7 +84,6 @@ def compare_pronunciation(original_file_path, user_file_path):
 
 @app.route('/compare-audio', methods=['POST'])
 def compare_audio_files():
-    # Без изменений
     if 'user_audio' not in request.files: return jsonify({"status": "error"}), 400
     if 'original_video_url' not in request.form: return jsonify({"status": "error"}), 400
 
@@ -125,7 +116,7 @@ def compare_audio_files():
 
 @app.route('/')
 def home():
-    return "Audio Server (Auto-Trim + Cosine)"
+    return "Audio Server (Sigmoid Calibration)"
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=10000)
