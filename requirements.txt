@@ -1,0 +1,10 @@
+flask
+flask-cors
+librosa
+numpy
+scipy
+fastdtw
+requests
+psutil
+gunicorn
+static-ffmpeg
