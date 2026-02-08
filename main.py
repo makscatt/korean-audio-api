@@ -194,51 +194,43 @@ def get_keyboard(is_start=False):
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def calculate_result(answers):
-    # 1. Берем только первые 9 ответов
-    main_answers = answers[:9]
-    counts = Counter(main_answers)
+    # Считаем, сколько раз выбран каждый вариант
+    counts = Counter(answers)
     
-    # Считаем частоты (c1..c4)
-    c1 = counts.get(1, 0)
-    c2 = counts.get(2, 0)
-    c3 = counts.get(3, 0)
-    c4 = counts.get(4, 0)
+    c1 = counts.get(1, 0) # Лидер
+    c2 = counts.get(2, 0) # Заботливый
+    c3 = counts.get(3, 0) # Душа компании
+    c4 = counts.get(4, 0) # Созерцатель
     
-    # 2. Считаем суммы групп
-    g12 = c1 + c2
-    g34 = c3 + c4
+    # Считаем суммы по двум большим группам
+    # Группа "Ответственность" (1 и 2)
+    group_responsible = c1 + c2 
+    # Группа "Атмосфера" (3 и 4)
+    group_atmosphere = c3 + c4  
     
-    # 3.1 Логика групп (Неравенство)
-    if g12 > g34:
-        return "Организатор"
-    if g34 > g12:
-        return "Адаптивный"
-        
-    # 3.2 Логика равенства (g12 == g34) - Проверка на строгого лидера
-    max_val = max(c1, c2, c3, c4)
+    # --- ЛОГИКА ---
     
-    # Собираем список тех, у кого максимум баллов
-    candidates = []
-    if c1 == max_val: candidates.append("Лидер")
-    if c2 == max_val: candidates.append("Заботливый")
-    if c3 == max_val: candidates.append("Душа компании")
-    if c4 == max_val: candidates.append("Созерцатель")
-    
-    # Если кандидат только один (строгий максимум) — возвращаем его
-    if len(candidates) == 1:
-        return candidates[0]
-        
-    # 3.3 Ничья в максимуме (несколько типов набрали одинаковое макс. кол-во)
-    # Смотрим на 9-й ответ (индекс 8)
-    last_ans = main_answers[8]
-    
-    if last_ans == 1: return "Лидер"
-    if last_ans == 2: return "Заботливый"
-    if last_ans == 3: return "Душа компании"
-    if last_ans == 4: return "Созерцатель"
-    
-    # На случай непредвиденных данных (fallback)
-    return "Адаптивный"
+    # Если человек чаще выбирал Ответственность (варианты 1 и 2)
+    if group_responsible >= group_atmosphere:
+        # Если 1 и 2 почти поровну (разница не больше 1) -> СМЕШАННЫЙ ТИП
+        if abs(c1 - c2) <= 1:
+            return "Организатор"
+        # Иначе побеждает сильнейший
+        elif c1 > c2:
+            return "Лидер"
+        else:
+            return "Заботливый"
+            
+    # Если человек чаще выбирал Атмосферу (варианты 3 и 4)
+    else:
+        # Если 3 и 4 почти поровну (разница не больше 1) -> СМЕШАННЫЙ ТИП
+        if abs(c3 - c4) <= 1:
+            return "Адаптивный"
+        # Иначе побеждает сильнейший
+        elif c3 > c4:
+            return "Душа компании"
+        else:
+            return "Созерцатель"
 
 # --- ХЕНДЛЕРЫ ---
 
