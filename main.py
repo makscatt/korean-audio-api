@@ -173,7 +173,7 @@ RESULT_IMAGES = {
     "Адаптивный": "2.jpg"
 }
 
-LINK_RESULT_POST = "https://t.me/YOUR_CHANNEL/POST_ID"
+LINK_RESULT_POST = "https://t.me/KoreanMaks/2845"
 LINK_CHANNEL = "https://t.me/KoreanMaks"
 
 # --- FSM ---
