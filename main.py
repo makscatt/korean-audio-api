@@ -1,240 +1,408 @@
 import asyncio
 import os
-import json
 import logging
 import sys
-import time
-import io
-from PIL import Image, ImageDraw, ImageOps
+from collections import Counter
+
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
-from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import FSInputFile, InputMediaPhoto, BufferedInputFile
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
+from aiogram.client.default import DefaultBotProperties
+
+# --- КОНФИГУРАЦИЯ ---
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
-API_TOKEN = os.environ.get("TELEGRAM_API_TOKEN")
+API_TOKEN = os.getenv("TELEGRAM_API_TOKEN")
 
-COORDS = [
-    (512, 184), 
-    (400, 430), 
-    (600, 430), 
-    (300, 750), 
-    (700, 750), 
-    (230, 1070),
-    (800, 1070) 
-]
+if not API_TOKEN:
+    sys.exit("Error: Environment variable TELEGRAM_API_TOKEN is not set.")
 
-IMG_SIZES = [
-    (400, 400), 
-    (450, 450), 
-    (450, 450), 
-    (500, 500), 
-    (500, 500), 
-    (550, 550), 
-    (550, 550)  
-]
-
-with open("candidates.json", "r", encoding="utf-8") as f:
-    CANDIDATES_DATA = json.load(f)
-
-CANDIDATES_LIST = [{"id": k, "name": v} for k, v in CANDIDATES_DATA.items()]
+# Путь к папке (ищет папку piknik рядом с файлом скрипта)
+IMG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "piknik")
 
 bot = Bot(token=API_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
 
-class SelectionStates(StatesGroup):
-    selecting = State()
+# --- ДАННЫЕ ТЕСТА ---
 
-def create_tree_image(selected_ids):
-    base = Image.open("img/tree.png").convert("RGBA")
+QUESTIONS = [
+    {
+        "text": "<b>Вы пришли на место стоянки. С чего начнёте?</b>",
+        "options": [
+            "1 — Предложу решить, кто чем займётся.",
+            "2 — Возьму на себя самую тяжёлую работу.",
+            "3 — Затею весёлый разговор или подшучу.",
+            "4 — Просто присяду отдохнуть."
+        ]
+    },
+    {
+        "text": "<b>Вокруг стоянки валяется какой-то мусор. Ваша первая мысль?</b>",
+        "options": [
+            "1 — «Давайте по-быстрому всё приберём вместе».",
+            "2 — Спокойно соберу всё сама.",
+            "3 — Превращу уборку в игру.",
+            "4 — Не буду заострять внимание."
+        ]
+    },
+    {
+        "text": "<b>Чонгук собирается за дровами один, а в лесу уже темнеет. Что сделаете?</b>",
+        "options": [
+            "1 — Попрошу ещё пару человек пойти с ним.",
+            "2 — Нагоню его и пойду рядом.",
+            "3 — Позову с собой Хосока, будем дурачиться.",
+            "4 — Оставлю его одного — ему это нужно."
+        ]
+    },
+    {
+        "text": "<b>Тэхён перебирает струны гитары и выглядит задумчивым. Ваша реакция?</b>",
+        "options": [
+            "1 — Пойду греть чай для всех.",
+            "2 — Тихо сяду рядом выслушать.",
+            "3 — Подхвачу мелодию и предложу спеть.",
+            "4 — Буду наблюдать со стороны."
+        ]
+    },
+    {
+        "text": "<b>Чимин случайно проливает на себя горячий чай. Как поступите?</b>",
+        "options": [
+            "1 — Помогу снять мокрую одежду.",
+            "2 — Найду сухую сменку или плед.",
+            "3 — Переведу всё в шутку.",
+            "4 — Подожду в стороне."
+        ]
+    },
+    {
+        "text": "<b>Намджун и Хосок о чём-то спорят. Что сделаете?</b>",
+        "options": [
+            "1 — Мягко вмешаюсь и предложу обсудить по делу.",
+            "2 — Подойду сгладить острый момент.",
+            "3 — Вброшу нелепую шутку.",
+            "4 — Не буду мешать."
+        ]
+    },
+    {
+        "text": "<b>Утро, Юнги никак не может проснуться. Как себя поведёте?</b>",
+        "options": [
+            "1 — Напомню про график и сборы.",
+            "2 — По-тихому помогу ему собраться.",
+            "3 — По-доброму подшучу над сонным видом.",
+            "4 — Не стану его трогать."
+        ]
+    },
+    {
+        "text": "<b>Джин переборщил с перцем в рамене и расстроен. Что скажете?</b>",
+        "options": [
+            "1 — «Давайте добавим воды или риса».",
+            "2 — «Главное, что горячо!» (помогу исправить).",
+            "3 — Буду есть, шутя, что мы драконы.",
+            "4 — Спокойно всё съем и не подам вида."
+        ]
+    },
+    {
+        "text": "<b>Поход позади. Вы в домике. Чем займётесь?</b>",
+        "options": [
+            "1 — Соберу всех для общего фото.",
+            "2 — Обойду ребят и спрошу, как они.",
+            "3 — Буду со смехом вспоминать провалы.",
+            "4 — Просто порадуюсь в тишине."
+        ]
+    },
+    {
+        # 10-й вопрос
+        "text": "<b>Пришло время прощаться. Ребята говорят: «오늘 덕분에 진짜 즐거웠어요». Что ответите?</b>",
+        "options": [
+            "1 — Улыбнусь и скажу: «Комао!».",
+            "2 — Тепло посмотрю и кивну.",
+            "3 — Попрошу повторить и достану переводчик.",
+            "4 — Засмеюсь и попрошу научить фразе."
+        ]
+    }
+]
+
+RESULTS_TEXT = {
+    "Лидер": (
+        "<b>🏆 Твой результат: Лидер</b>\n\n"
+        "Ты тот человек, который видит общую картину и не боится предложить план, когда остальные сомневаются. "
+        "Тебе важно, чтобы всё шло понятно и без лишнего хаоса. Рядом с тобой группа чувствует себя уверенно.\n\n"
+        "🤝 <i>Наверняка вы бы быстро нашли общий язык с Намджуном.</i>"
+    ),
+    "Заботливый": (
+        "<b>🫂 Твой результат: Заботливый</b>\n\n"
+        "Ты замечаешь то, что другие упускают: чью-то усталость или плохое настроение. "
+        "Твоя суперсила — в умении вовремя прийти на помощь и создать ощущение безопасности. "
+        "С тобой просто и очень спокойно.\n\n"
+        "🤝 <i>Твоя чуткость точно отозвалась бы Чимину.</i>"
+    ),
+    "Душа компании": (
+        "<b>🎉 Твой результат: Душа компании</b>\n\n"
+        "Там, где ты, всегда становится легче и веселее. Ты умеешь превратить любую заминку в классную историю "
+        "и вовремя разрядить обстановку шуткой. С тобой приключения запоминаются ярче.\n\n"
+        "🤝 <i>Вам было бы особенно весело втроем — с Чонгуком и Хосоком!</i>"
+    ),
+    "Созерцатель": (
+        "<b>🌿 Твой результат: Созерцатель</b>\n\n"
+        "Ты умеешь ловить момент и не любишь лишней суеты. Тебе важно сначала присмотреться к происходящему "
+        "и дать событиям идти своим чередом. Твоё спокойствие помогает остальным выдохнуть.\n\n"
+        "🤝 <i>Вам было бы очень уютно с Юнги.</i>"
+    ),
+    "Организатор": (
+        "<b>📋 Твой результат: Организатор</b>\n\n"
+        "Ты мастерски совмещаешь чёткость и теплоту. Можешь организовать любой процесс так, чтобы никто "
+        "не чувствовал себя обделённым вниманием. Рядом с тобой всем комфортно.\n\n"
+        "🤝 <i>Кажется, вы бы отлично поладили с Джином.</i>"
+    ),
+    "Адаптивный": (
+        "<b>✨ Твой результат: Адаптивный</b>\n\n"
+        "Ты не любишь действовать по шаблону и отлично чувствуешь ситуацию. Можешь быть кем угодно: "
+        "сегодня — взять инициативу, завтра — просто поддержать шуткой. Твоя гибкость помогает тебе идеально вписаться.\n\n"
+        "🤝 <i>С твоим умением подстраиваться ты бы легко поладила с Тэхёном.</i>"
+    )
+}
+
+RESULT_IMAGES = {
+    "Лидер": "7.jpg",
+    "Заботливый": "6.jpg",
+    "Душа компании": "5.jpg",
+    "Созерцатель": "4.jpg",
+    "Организатор": "3.jpg",
+    "Адаптивный": "2.jpg"
+}
+
+LINK_RESULT_POST = "https://t.me/YOUR_CHANNEL/POST_ID"
+LINK_CHANNEL = "https://t.me/KoreanMaks"
+
+# --- FSM ---
+
+class QuizStates(StatesGroup):
+    intro = State()
+    question = State()
+
+# --- ЛОГИКА ---
+
+def get_keyboard(is_start=False):
+    rows = []
+    if is_start:
+        rows.append([InlineKeyboardButton(text="🏕 Идём в поход!", callback_data="start_quiz")])
+    else:
+        buttons = [InlineKeyboardButton(text=str(i), callback_data=f"ans:{i}") for i in range(1, 5)]
+        rows.append(buttons)
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+def calculate_result(answers):
+    # 1. Берем только первые 9 ответов
+    main_answers = answers[:9]
+    counts = Counter(main_answers)
     
-    try:
-        santa_img = Image.open("img/final_santa.png").convert("RGBA")
-        santa_size = (700, 700)
-        santa_coords = (512, 1251)
+    # Считаем частоты (c1..c4)
+    c1 = counts.get(1, 0)
+    c2 = counts.get(2, 0)
+    c3 = counts.get(3, 0)
+    c4 = counts.get(4, 0)
+    
+    # 2. Считаем суммы групп
+    g12 = c1 + c2
+    g34 = c3 + c4
+    
+    # 3.1 Логика групп (Неравенство)
+    if g12 > g34:
+        return "Организатор"
+    if g34 > g12:
+        return "Адаптивный"
         
-        santa_img = ImageOps.fit(santa_img, santa_size, centering=(0.5, 0.5))
-        x_santa = santa_coords[0] - santa_size[0] // 2
-        y_santa = santa_coords[1] - santa_size[1] // 2
+    # 3.2 Логика равенства (g12 == g34) - Проверка на строгого лидера
+    max_val = max(c1, c2, c3, c4)
+    
+    # Собираем список тех, у кого максимум баллов
+    candidates = []
+    if c1 == max_val: candidates.append("Лидер")
+    if c2 == max_val: candidates.append("Заботливый")
+    if c3 == max_val: candidates.append("Душа компании")
+    if c4 == max_val: candidates.append("Созерцатель")
+    
+    # Если кандидат только один (строгий максимум) — возвращаем его
+    if len(candidates) == 1:
+        return candidates[0]
         
-        base.paste(santa_img, (x_santa, y_santa), santa_img)
-    except Exception as e:
-        logging.error(f"Error processing final_santa: {e}")
+    # 3.3 Ничья в максимуме (несколько типов набрали одинаковое макс. кол-во)
+    # Смотрим на 9-й ответ (индекс 8)
+    last_ans = main_answers[8]
+    
+    if last_ans == 1: return "Лидер"
+    if last_ans == 2: return "Заботливый"
+    if last_ans == 3: return "Душа компании"
+    if last_ans == 4: return "Созерцатель"
+    
+    # На случай непредвиденных данных (fallback)
+    return "Адаптивный"
 
-    for i, uid in enumerate(selected_ids):
-        if i >= len(COORDS): break
-        
-        try:
-            current_size = IMG_SIZES[i]
-            actor_img = Image.open(f"img/{uid}.png").convert("RGBA")
-            actor_img = ImageOps.fit(actor_img, current_size, centering=(0.5, 0.5))
-            
-            x = COORDS[i][0] - current_size[0] // 2
-            y = COORDS[i][1] - current_size[1] // 2
-            
-            base.paste(actor_img, (x, y), actor_img)
-        except Exception as e:
-            logging.error(f"Error processing image {uid}: {e}")
-
-    bio = io.BytesIO()
-    base.save(bio, format="PNG")
-    bio.seek(0)
-    return bio
-
-async def reminder_timer(user_id: int, state: FSMContext, timestamp: float):
-    await asyncio.sleep(900)
-    current_state = await state.get_state()
-    data = await state.get_data()
-    
-    if current_state == SelectionStates.selecting.state:
-        last_time = data.get("last_action_time", 0)
-        if last_time == timestamp:
-            await bot.send_message(user_id, "Эй! Ты ещё тут? Осталось выбрать совсем немного!")
-
-async def build_keyboard(all_items, selected_ids, page):
-    items_per_page = 15
-    available_items = [item for item in all_items if item["id"] not in selected_ids]
-    
-    start_index = page * items_per_page
-    end_index = start_index + items_per_page
-    page_items = available_items[start_index:end_index]
-    
-    builder = InlineKeyboardBuilder()
-    
-    for item in page_items:
-        builder.button(text=item["name"], callback_data=f"pick:{item['id']}")
-    
-    builder.adjust(3)
-
-    nav_buttons = []
-    if page > 0:
-        nav_buttons.append(types.InlineKeyboardButton(text="⬅️", callback_data=f"page:{page-1}"))
-    if end_index < len(available_items):
-        nav_buttons.append(types.InlineKeyboardButton(text="➡️", callback_data=f"page:{page+1}"))
-    
-    if nav_buttons:
-        builder.row(*nav_buttons)
-        
-    return builder.as_markup()
+# --- ХЕНДЛЕРЫ ---
 
 @dp.message(Command("start"))
 @dp.message(F.text.lower() == "привет")
-async def start(message: types.Message, state: FSMContext):
+async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
-    await state.set_state(SelectionStates.selecting)
     
-    timestamp = time.time()
-    await state.update_data(selected=[], page=0, last_action_time=timestamp)
-    
-    asyncio.create_task(reminder_timer(message.from_user.id, state, timestamp))
-    
-    keyboard = await build_keyboard(CANDIDATES_LIST, [], 0)
-    
-    photo = FSInputFile("img/santa.png")
-    
-    text = (
-        "Кто из корейских красавчиков станет идеальным украшением для твоей новогодней елочки?\n\n"
-        "Это будет трудный выбор. Всего в списке <b>45 красавчиков</b>, а выбрать нужно только 7.\n\n"
-        "👇 <i>Используй кнопки внизу (⬅️ ➡️), чтобы листать страницы и посмотреть всех!</i>"
+    intro_text = (
+        "<b>Определи свой тип личности, отправившись в поход с BTS 🌲🔥</b>\n\n"
+        "Представь: ты отправляешься в поход вместе с ребятами из BTS.\n"
+        "Вокруг только горы, лес и тишина. Впереди — уютные вечера у костра, песни под гитару "
+        "и те самые искренние разговоры под звёздами.\n\n"
+        "Но любое приключение — это ещё и маленькие неожиданности. Пройди этот путь из 10 ситуаций "
+        "и узнай, какую роль ты играешь в компании!\n\n"
+        "Пойдём?"
     )
     
-    await message.answer_photo(photo=photo, caption=text, reply_markup=keyboard)
+    photo_path = os.path.join(IMG_DIR, "1.jpg")
+    print(f"Ищу картинку здесь: {photo_path}")
+    if os.path.exists(photo_path):
+        await message.answer_photo(
+            photo=FSInputFile(photo_path),
+            caption=intro_text,
+            reply_markup=get_keyboard(is_start=True)
+        )
+    else:
+        print("Картинка не найдена!")
+        await message.answer(intro_text, reply_markup=get_keyboard(is_start=True))
+        
+    await state.set_state(QuizStates.intro)
 
-@dp.callback_query(lambda c: c.data.startswith("page:"))
-async def process_page(callback: types.CallbackQuery, state: FSMContext):
-    await callback.answer()
+@dp.callback_query(F.data == "start_quiz")
+async def start_quiz(callback: types.CallbackQuery, state: FSMContext):
+    # Устанавливаем состояние и сбрасываем ответы
+    await state.set_state(QuizStates.question)
+    await state.update_data(current_index=0, answers=[])
     
-    page = int(callback.data.split(":")[1])
-    data = await state.get_data()
-    selected = data.get("selected", [])
+    q_data = QUESTIONS[0]
+    total_q = len(QUESTIONS)
+    header = f"<b>[{1}/{total_q}]</b>\n"
     
-    timestamp = time.time()
-    await state.update_data(page=page, last_action_time=timestamp)
-    asyncio.create_task(reminder_timer(callback.from_user.id, state, timestamp))
-
-    keyboard = await build_keyboard(CANDIDATES_LIST, selected, page)
+    text = header + f"{q_data['text']}\n\n" + "\n".join(q_data['options'])
     
+    # ИЗМЕНЕНИЕ:
+    # Вместо удаления (delete), мы просто убираем кнопки у предыдущего сообщения
+    # (будь то Интро или Результаты прошлого теста), чтобы оно осталось в истории.
     try:
-        await callback.message.edit_reply_markup(reply_markup=keyboard)
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except:
+        pass
+        
+    # Отправляем первый вопрос НОВЫМ сообщением вниз по ленте
+    await callback.message.answer(text, reply_markup=get_keyboard(is_start=False))
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("ans:"))
+async def process_answer(callback: types.CallbackQuery, state: FSMContext):
+    answer = int(callback.data.split(":")[1])
+    data = await state.get_data()
+    
+    current_index = data.get("current_index", 0)
+    answers = data.get("answers", [])
+    answers.append(answer)
+    
+    # 1. ОБНОВЛЯЕМ ТЕКУЩИЙ ВОПРОС (чтобы он остался в истории с выбором)
+    
+    # Получаем данные текущего вопроса
+    curr_q_data = QUESTIONS[current_index]
+    total_q = len(QUESTIONS)
+    
+    # Текст выбранного варианта (индексы массива сдвинуты на -1 относительно ответов 1-4)
+    selected_option_text = curr_q_data['options'][answer - 1]
+    
+    header = f"<b>[{current_index + 1}/{total_q}]</b>\n"
+    
+    # Формируем финальный текст этого шага
+    history_text = (
+        f"{header}{curr_q_data['text']}\n\n"
+        f"✅ <b>Выбрано:</b> {selected_option_text}"
+    )
+    
+    # Редактируем сообщение: меняем текст и убираем кнопки
+    await callback.message.edit_text(history_text, reply_markup=None)
+    
+    # 2. ПЕРЕХОДИМ К СЛЕДУЮЩЕМУ ВОПРОСУ
+    
+    next_index = current_index + 1
+    
+    if next_index < len(QUESTIONS):
+        await state.update_data(current_index=next_index, answers=answers)
+        
+        q_data = QUESTIONS[next_index]
+        
+        header = f"<b>[{next_index + 1}/{total_q}]</b>\n"
+        text = header + f"{q_data['text']}\n\n" + "\n".join(q_data['options'])
+        
+        # ОТПРАВЛЯЕМ НОВОЕ СООБЩЕНИЕ (вместо редактирования старого)
+        await callback.message.answer(text, reply_markup=get_keyboard(is_start=False))
+        await callback.answer()
+    else:
+        # --- ФИНАЛ ---
+        # Последний вопрос уже отредактирован и остался висеть.
+        # Просто отправляем результат новым сообщением.
+        
+        loading_text = "Анализирую твой походный тип личности"
+        msg = await callback.message.answer(f"{loading_text} 🌲")
+        
+        for _ in range(2): 
+            await asyncio.sleep(0.5)
+            await msg.edit_text(f"{loading_text} 🌲🌲")
+            await asyncio.sleep(0.5)
+            await msg.edit_text(f"{loading_text} 🌲🌲🌲")
+            await asyncio.sleep(0.5)
+            await msg.edit_text(f"{loading_text} 🌲")
+            
+        await msg.delete()
+        
+        result_type = calculate_result(answers)
+        result_desc = RESULTS_TEXT.get(result_type, RESULTS_TEXT["Адаптивный"])
+        
+        final_text = (
+            f"{result_desc}\n\n"
+            "А если хочешь чаще видеться с любимками и участвовать в таких приключениях — "
+            "подписывайся на мой канал. Там тебя ждёт ещё много тёплых историй и классных штук."
+        )
+        
+        kb_list = [
+            [InlineKeyboardButton(text="📸 Показать свой результат", url=LINK_RESULT_POST)],
+            [InlineKeyboardButton(text="✨ Больше историй с любимками", url=LINK_CHANNEL)],
+            [InlineKeyboardButton(text="🔄 Пройти заново", callback_data="start_quiz")]
+        ]
+        
+        image_filename = RESULT_IMAGES.get(result_type, "7.jpg")
+        photo_path = os.path.join(IMG_DIR, image_filename)
+        
+        if os.path.exists(photo_path):
+            await callback.message.answer_photo(
+                photo=FSInputFile(photo_path),
+                caption=final_text,
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_list)
+            )
+        else:
+            await callback.message.answer(
+                final_text, 
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_list)
+            )
+            
+        await state.clear()
+        await callback.answer()
+
+@dp.message(QuizStates.question)
+async def handle_text_in_quiz(message: types.Message):
+    await message.delete() 
+    msg = await message.answer("Пожалуйста, выбери вариант ответа с помощью кнопок выше 👆")
+    await asyncio.sleep(3)
+    try:
+        await msg.delete()
     except:
         pass
 
-@dp.callback_query(lambda c: c.data.startswith("pick:"))
-async def process_pick(callback: types.CallbackQuery, state: FSMContext):
-    item_id = callback.data.split(":")[1]
-    data = await state.get_data()
-    selected = data.get("selected", [])
-    page = data.get("page", 0)
-
-    if item_id not in selected:
-        selected.append(item_id)
-    
-    timestamp = time.time()
-    await state.update_data(selected=selected, last_action_time=timestamp)
-    asyncio.create_task(reminder_timer(callback.from_user.id, state, timestamp))
-
-    selected_names = [CANDIDATES_DATA[sid] for sid in selected]
-
-    if len(selected) >= 7:
-        processing_media = InputMediaPhoto(
-            media=FSInputFile("img/processing.png"),
-            caption="🎄 Наряжаем елочку... Подожди немного!"
-        )
-        await callback.message.edit_media(media=processing_media, reply_markup=None)
-
-        await asyncio.sleep(3)
-
-        loop = asyncio.get_running_loop()
-        result_img_io = await loop.run_in_executor(None, create_tree_image, selected)
-        result_file = BufferedInputFile(result_img_io.read(), filename="result.png")
-        
-        names_list = "\n".join([f"{i+1}. {name}" for i, name in enumerate(selected_names)])
-
-        result_text = (
-            "<b>Твоя елочка украшена! 🎄🎅🏻</b>\n\n"
-            "В этом году тебя будут радовать:\n\n"
-            f"{names_list}\n\n"
-            "Поделись Ёлочкой у меня в группе: https://t.me/KoreanMaks"
-        )
-
-        new_media = InputMediaPhoto(
-            media=result_file,
-            caption=result_text
-        )
-        
-        await callback.message.edit_media(media=new_media, reply_markup=None)
-        await state.clear()
-    else:
-        remaining = 7 - len(selected)
-        current_text = ", ".join(selected_names)
-        
-        available_count_now = len([item for item in CANDIDATES_LIST if item["id"] not in selected])
-        max_pages = (available_count_now - 1) // 15
-        if page > max_pages:
-            page = max_pages
-
-        await state.update_data(page=page)
-        
-        keyboard = await build_keyboard(CANDIDATES_LIST, selected, page)
-        
-        text = (
-            "Кто из корейских красавчиков станет идеальным украшением для твоей новогодней елочки?\n\n"
-            f"Выбрано: <b>{current_text}</b>\n"
-            f"Осталось выбрать: <b>{remaining}</b>\n\n"
-            "👇 <i>Листай страницы (⬅️ ➡️), чтобы найти всех кандидатов!</i>"
-        )
-        
-        await callback.message.edit_caption(caption=text, reply_markup=keyboard)
-
 @dp.message()
-async def handle_any_text(message: types.Message):
-    await message.answer("Чтобы украсить Ёлку нажми /start \n\n Или напиши 'привет'")
+async def handle_unknown(message: types.Message):
+    await message.answer("Нажми /start, чтобы начать поход с BTS!")
 
 async def main():
     await dp.start_polling(bot)
